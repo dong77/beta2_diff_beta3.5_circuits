@@ -1,14 +1,18 @@
+
+#include "ThirdParty/BigInt.hpp"
 #include "Utils/Data.h"
 #include "Circuits/RingSettlementCircuit.h"
 #include "Circuits/DepositCircuit.h"
 #include "Circuits/OnchainWithdrawalCircuit.h"
 #include "Circuits/OffchainWithdrawalCircuit.h"
 #include "Circuits/OrderCancellationCircuit.h"
+#include "Circuits/InternalTransferCircuit.h"
 
 #include "ThirdParty/json.hpp"
 #include "ethsnarks.hpp"
 #include "stubs.hpp"
 #include <fstream>
+#include <chrono>
 
 #ifdef MULTICORE
 #include <omp.h>
@@ -22,6 +26,19 @@ enum class Mode
     Validate,
     Prove
 };
+
+static inline auto now() -> decltype(std::chrono::high_resolution_clock::now()) {
+    return std::chrono::high_resolution_clock::now();
+}
+
+template<typename T>
+void
+print_time(T &t1, const char *str) {
+    auto t2 = std::chrono::high_resolution_clock::now();
+    auto tim = std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count();
+    printf("%s: %ld ms\n", str, tim);
+    t1 = t2;
+}
 
 timespec diff(timespec start, timespec end)
 {
@@ -49,12 +66,24 @@ bool generateKeyPair(ethsnarks::ProtoboardT& pb, std::string& baseFilename)
 {
     std::string provingKeyFilename = baseFilename + "_pk.raw";
     std::string verificationKeyFilename = baseFilename + "_vk.json";
-    if (fileExists(provingKeyFilename.c_str()) && fileExists(verificationKeyFilename.c_str()))
+#ifdef GPU_PROVE
+    std::string paramsFilename = baseFilename + "_params.raw";
+#endif
+    if (fileExists(provingKeyFilename.c_str()) && fileExists(verificationKeyFilename.c_str())
+#ifdef GPU_PROVE
+        && fileExists(paramsFilename.c_str())
+#endif
+    )
     {
         return true;
     }
+#ifdef GPU_PROVE
+    std::cout << "Generating keys and params..." << std::endl;
+    int result = stub_genkeys_params_from_pb(pb, provingKeyFilename.c_str(), verificationKeyFilename.c_str(), paramsFilename.c_str());
+#else
     std::cout << "Generating keys..." << std::endl;
     int result = stub_genkeys_from_pb(pb, provingKeyFilename.c_str(), verificationKeyFilename.c_str());
+#endif
     return (result == 0);
 }
 
@@ -64,7 +93,9 @@ bool generateProof(ethsnarks::ProtoboardT& pb, const char *provingKeyFilename, c
     timespec time1, time2;
     clock_gettime(CLOCK_MONOTONIC, &time1);
 
+    auto begin = now();
     std::string jProof = stub_prove_from_pb(pb, provingKeyFilename);
+    print_time(begin, "Generated proof");
 
     clock_gettime(CLOCK_MONOTONIC, &time2);
     timespec duration = diff(time1,time2);
@@ -139,11 +170,11 @@ bool deposit(Mode mode, unsigned int numDeposits, const json& input, ethsnarks::
     return true;
 }
 
-bool onchainWithdraw(Mode mode, bool onchainDataAvailability, unsigned int numWithdrawals, const json& input, ethsnarks::ProtoboardT& outPb)
+bool onchainWithdraw(Mode mode, unsigned int numWithdrawals, const json& input, ethsnarks::ProtoboardT& outPb)
 {
     // Build the circuit
     Loopring::OnchainWithdrawalCircuit circuit(outPb, "circuit");
-    circuit.generate_r1cs_constraints(onchainDataAvailability, numWithdrawals);
+    circuit.generate_r1cs_constraints(numWithdrawals);
     circuit.printInfo();
 
     if (mode == Mode::Validate || mode == Mode::Prove)
@@ -223,6 +254,34 @@ bool cancel(Mode mode, bool onchainDataAvailability, unsigned int numCancels, co
     return true;
 }
 
+bool internalTransfer(Mode mode, bool onchainDataAvailability, unsigned int numTransfers, const json& input, ethsnarks::ProtoboardT& outPb)
+{
+    // Build the circuit
+    Loopring::InternalTransferCircuit circuit(outPb, "circuit");
+    circuit.generate_r1cs_constraints(onchainDataAvailability, numTransfers);
+    circuit.printInfo();
+
+    if (mode == Mode::Validate || mode == Mode::Prove)
+    {
+        json jTransfers = input["transfers"];
+        if (jTransfers.size() != numTransfers)
+        {
+            std::cerr << "Invalid number of transfers in input file: " << jTransfers.size() << std::endl;
+            return false;
+        }
+
+        Loopring::InternalTransferBlock block = input.get<Loopring::InternalTransferBlock>();
+
+        // Generate witness values for the given input values
+        if (!circuit.generateWitness(block))
+        {
+            std::cerr << "Could not generate witness!" << std::endl;
+            return false;
+        }
+    }
+    return true;
+}
+
 int main (int argc, char **argv)
 {
     ethsnarks::ppT::init_public_params();
@@ -233,6 +292,7 @@ int main (int argc, char **argv)
         std::cerr << "-validate <block.json>: Validates a block" << std::endl;
         std::cerr << "-prove <block.json> <out_proof.json>: Proves a block" << std::endl;
         std::cerr << "-createkeys <protoBlock.json>: Creates prover/verifier keys" << std::endl;
+        std::cerr << "-verify <vk.json> <proof.json>: Verify a proof" << std::endl;
         return 1;
     }
 
@@ -266,6 +326,20 @@ int main (int argc, char **argv)
         }
         mode = Mode::CreateKeys;
         std::cout << "Creating keys for " << argv[2] << "..." << std::endl;
+    }
+    else if (strcmp(argv[1], "-verify") == 0)
+    {
+        if (argc != 4)
+        {
+            return 1;
+        }
+        std::cout << "Verify for " << argv[3] << " ..." << std::endl;
+        if (stub_main_verify(argv[0], argc - 1, (const char **)(argv + 1)))
+        {
+            return 1;
+        }
+        std::cout << "Proof is valid" << std::endl;
+        return 0;
     }
     else
     {
@@ -318,7 +392,7 @@ int main (int argc, char **argv)
         case 2:
         {
             baseFilename += "withdraw_onchain" + postFix;
-            if (!onchainWithdraw(mode, onchainDataAvailability, blockSize, input, pb))
+            if (!onchainWithdraw(mode, blockSize, input, pb))
             {
                 return 1;
             }
@@ -337,6 +411,15 @@ int main (int argc, char **argv)
         {
             baseFilename += "cancel" + postFix;
             if (!cancel(mode, onchainDataAvailability, blockSize, input, pb))
+            {
+                return 1;
+            }
+            break;
+        }
+        case 5:
+        {
+            baseFilename += "internal_transfer" + postFix;
+            if (!internalTransfer(mode, onchainDataAvailability, blockSize, input, pb))
             {
                 return 1;
             }
@@ -369,12 +452,21 @@ int main (int argc, char **argv)
         }
     }
 
+
     if (mode == Mode::Prove)
     {
+#ifdef GPU_PROVE
+        std::cout << "GPU Prove: Generate inputsFile." << std::endl;
+        std::string inputsFilename = baseFilename + "_inputs.raw";
+        auto begin = now();
+        stub_write_input_from_pb(pb,  (baseFilename + "_pk.raw").c_str(), inputsFilename.c_str());
+        print_time(begin, "write input");
+#else
         if (!generateProof(pb, (baseFilename + "_pk.raw").c_str(), proofFilename))
         {
             return 1;
         }
+#endif
     }
 
     return 0;

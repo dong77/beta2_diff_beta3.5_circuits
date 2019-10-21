@@ -1,11 +1,13 @@
 #ifndef _ORDERGADGETS_H_
 #define _ORDERGADGETS_H_
 
-#include "TradingHistoryGadgets.h"
 #include "../Utils/Constants.h"
 #include "../Utils/Data.h"
+#include "TradingHistoryGadgets.h"
+#include "AccountGadgets.h"
 
 #include "ethsnarks.hpp"
+#include "gadgets/poseidon.hpp"
 #include "utils.hpp"
 
 using namespace ethsnarks;
@@ -13,57 +15,50 @@ using namespace ethsnarks;
 namespace Loopring
 {
 
-
 class OrderGadget : public GadgetT
 {
 public:
 
-    libsnark::dual_variable_gadget<FieldT> exchangeID;
-    libsnark::dual_variable_gadget<FieldT> orderID;
-    libsnark::dual_variable_gadget<FieldT> accountID;
-    libsnark::dual_variable_gadget<FieldT> tokenS;
-    libsnark::dual_variable_gadget<FieldT> tokenB;
-    libsnark::dual_variable_gadget<FieldT> amountS;
-    libsnark::dual_variable_gadget<FieldT> amountB;
-    libsnark::dual_variable_gadget<FieldT> allOrNone;
-    libsnark::dual_variable_gadget<FieldT> validSince;
-    libsnark::dual_variable_gadget<FieldT> validUntil;
-    libsnark::dual_variable_gadget<FieldT> maxFeeBips;
-    libsnark::dual_variable_gadget<FieldT> buy;
+    // State
+    TradeHistoryGadget tradeHistoryBefore;
+    BalanceGadget balanceSBefore;
+    BalanceGadget balanceBBefore;
+    AccountGadget accountBefore;
 
-    libsnark::dual_variable_gadget<FieldT> feeBips;
-    libsnark::dual_variable_gadget<FieldT> rebateBips;
+    // Inputs
+    DualVariableGadget orderID;
+    DualVariableGadget accountID;
+    DualVariableGadget tokenS;
+    DualVariableGadget tokenB;
+    DualVariableGadget amountS;
+    DualVariableGadget amountB;
+    DualVariableGadget allOrNone;
+    DualVariableGadget validSince;
+    DualVariableGadget validUntil;
+    DualVariableGadget maxFeeBips;
+    DualVariableGadget buy;
+    VariableT label;
 
+    DualVariableGadget feeBips;
+    DualVariableGadget rebateBips;
+
+    // Checks
+    RequireZeroAorBGadget feeOrRebateZero;
+    RequireLeqGadget feeBips_leq_maxFeeBips;
+    RequireNotEqualGadget tokenS_neq_tokenB;
+    RequireNotZeroGadget amountS_notZero;
+    RequireNotZeroGadget amountB_notZero;
+
+    // FeeOrRebate public input
+    IsNonZero bRebateNonZero;
+    UnsafeAddGadget fee_plus_rebate;
     libsnark::dual_variable_gadget<FieldT> feeOrRebateBips;
-    LeqGadget bRebateNonZero;
-    UnsafeAddGadget feeAddRebate;
-    ForceEqualGadget validateFeeOrRebateBips;
 
-    ForceZeroAorBGadget feeOrRebateZero;
-    ForceLeqGadget validateFeeBips;
-
-    ForceEqualGadget validateExchangeID;
-
-    ForceNotEqualGadget tokenS_neq_tokenB;
-    ForceNotZeroGadget amountS_notZero;
-    ForceNotZeroGadget amountB_notZero;
-
-    const jubjub::VariablePointT publicKey;
-
-    libsnark::dual_variable_gadget<FieldT> dualAuthPublicKeyX;
-    libsnark::dual_variable_gadget<FieldT> dualAuthPublicKeyY;
-    const jubjub::VariablePointT dualAuthPublicKey;
-
-    VariableT tradeHistoryFilled;
-    VariableT tradeHistoryCancelled;
-    VariableT tradeHistoryOrderID;
-
+    // Trade history
     TradeHistoryTrimmingGadget tradeHistory;
 
-    VariableT balanceS;
-    VariableT balanceB;
-
-    const VariableArrayT message;
+    // Signature
+    Poseidon_gadget_T<14, 1, 6, 53, 13, 1> hash;
     SignatureVerifier signatureVerifier;
 
     OrderGadget(
@@ -75,11 +70,17 @@ public:
     ) :
         GadgetT(pb, prefix),
 
-        exchangeID(pb, 32, FMT(prefix, ".exchangeID")),
+        // State
+        tradeHistoryBefore(pb, FMT(prefix, ".tradeHistoryBefore")),
+        balanceSBefore(pb, FMT(prefix, ".balanceSBefore")),
+        balanceBBefore(pb, FMT(prefix, ".balanceBBefore")),
+        accountBefore(pb, FMT(prefix, ".accountBefore")),
+
+        // Inputs
         orderID(pb, NUM_BITS_ORDERID, FMT(prefix, ".orderID")),
-        accountID(pb, TREE_DEPTH_ACCOUNTS, FMT(prefix, ".accountID")),
-        tokenS(pb, TREE_DEPTH_TOKENS, FMT(prefix, ".tokenS")),
-        tokenB(pb, TREE_DEPTH_TOKENS, FMT(prefix, ".tokenB")),
+        accountID(pb, NUM_BITS_ACCOUNT, FMT(prefix, ".accountID")),
+        tokenS(pb, NUM_BITS_TOKEN, FMT(prefix, ".tokenS")),
+        tokenB(pb, NUM_BITS_TOKEN, FMT(prefix, ".tokenB")),
         amountS(pb, NUM_BITS_AMOUNT, FMT(prefix, ".amountS")),
         amountB(pb, NUM_BITS_AMOUNT, FMT(prefix, ".amountB")),
         allOrNone(pb, 1, FMT(prefix, ".allOrNone")),
@@ -87,127 +88,98 @@ public:
         validUntil(pb, NUM_BITS_TIMESTAMP, FMT(prefix, ".validUntil")),
         maxFeeBips(pb, NUM_BITS_BIPS, FMT(prefix, ".maxFeeBips")),
         buy(pb, 1, FMT(prefix, ".buy")),
+        label(make_variable(pb, FMT(prefix, ".label"))),
 
         feeBips(pb, NUM_BITS_BIPS, FMT(prefix, ".feeBips")),
         rebateBips(pb, NUM_BITS_BIPS, FMT(prefix, ".rebateBips")),
 
-        feeOrRebateBips(pb, NUM_BITS_BIPS, FMT(prefix, ".feeOrRebateBips")),
-        bRebateNonZero(pb, constants.zero, rebateBips.packed, NUM_BITS_BIPS, FMT(prefix, ".bRebateNonZero")),
-        feeAddRebate(pb, feeBips.packed, rebateBips.packed, FMT(prefix, ".feeAddRebate")),
-        validateFeeOrRebateBips(pb, feeAddRebate.result(), feeOrRebateBips.packed, FMT(prefix, ".validateFeeOrRebateBips")),
-
+        // Checks
         feeOrRebateZero(pb, feeBips.packed, rebateBips.packed, FMT(prefix, ".feeOrRebateZero")),
-        validateFeeBips(pb, feeBips.packed, maxFeeBips.packed, NUM_BITS_BIPS, FMT(prefix, ".feeBips <= maxFeeBips")),
-
-        validateExchangeID(pb, exchangeID.packed, blockExchangeID, FMT(annotation_prefix, ".validateExchangeID")),
-
+        feeBips_leq_maxFeeBips(pb, feeBips.packed, maxFeeBips.packed, NUM_BITS_BIPS, FMT(prefix, ".feeBips <= maxFeeBips")),
         tokenS_neq_tokenB(pb, tokenS.packed, tokenB.packed, FMT(prefix, ".tokenS != tokenB")),
-        amountS_notZero(pb, amountS.packed, FMT(prefix, ".tokenS != 0")),
-        amountB_notZero(pb, amountB.packed, FMT(prefix, ".tokenB != 0")),
+        amountS_notZero(pb, amountS.packed, FMT(prefix, ".amountS != 0")),
+        amountB_notZero(pb, amountB.packed, FMT(prefix, ".amountB != 0")),
 
-        publicKey(pb, FMT(prefix, ".publicKey")),
+        // FeeOrRebate public input
+        fee_plus_rebate(pb, feeBips.packed, rebateBips.packed, FMT(prefix, ".fee_plus_rebate")),
+        feeOrRebateBips(pb, fee_plus_rebate.result(), NUM_BITS_BIPS, FMT(prefix, ".feeOrRebateBips")),
+        bRebateNonZero(pb, rebateBips.packed, FMT(prefix, ".bRebateNonZero")),
 
-        dualAuthPublicKeyX(pb, 254, FMT(prefix, ".dualAuthPublicKeyX")),
-        dualAuthPublicKeyY(pb, 254, FMT(prefix, ".dualAuthPublicKeyY")),
-        dualAuthPublicKey(dualAuthPublicKeyX.packed, dualAuthPublicKeyY.packed),
+        // Trade history
+        tradeHistory(pb, constants, tradeHistoryBefore, orderID.packed, FMT(prefix, ".tradeHistory")),
 
-        tradeHistoryFilled(make_variable(pb, FMT(prefix, ".tradeHistoryFilled"))),
-        tradeHistoryCancelled(make_variable(pb, FMT(prefix, ".tradeHistoryCancelled"))),
-        tradeHistoryOrderID(make_variable(pb, FMT(prefix, ".tradeHistoryOrderID"))),
-
-        tradeHistory(pb, constants, tradeHistoryFilled, tradeHistoryCancelled, tradeHistoryOrderID, orderID.packed, FMT(prefix, ".tradeHistory")),
-
-        balanceS(make_variable(pb, FMT(prefix, ".balanceS"))),
-        balanceB(make_variable(pb, FMT(prefix, ".balanceB"))),
-
-        message(flatten({exchangeID.bits, orderID.bits, accountID.bits,
-                         dualAuthPublicKeyX.bits, dualAuthPublicKeyY.bits,
-                         tokenS.bits, tokenB.bits,
-                         amountS.bits, amountB.bits,
-                         allOrNone.bits, validSince.bits, validUntil.bits,
-                         maxFeeBips.bits, buy.bits})),
-        signatureVerifier(pb, params, publicKey, message, FMT(prefix, ".signatureVerifier"))
+        // Signature
+        hash(pb, var_array({
+            blockExchangeID,
+            orderID.packed,
+            accountID.packed,
+            tokenS.packed,
+            tokenB.packed,
+            amountS.packed,
+            amountB.packed,
+            allOrNone.packed,
+            validSince.packed,
+            validUntil.packed,
+            maxFeeBips.packed,
+            buy.packed,
+            label
+        }), FMT(this->annotation_prefix, ".hash")),
+        signatureVerifier(pb, params, accountBefore.publicKey, hash.result(), FMT(prefix, ".signatureVerifier"))
     {
 
-    }
-
-    const VariableArrayT& getHash()
-    {
-        return signatureVerifier.getHash();
     }
 
     void generate_r1cs_witness(const Order& order, const Account& account,
                                const BalanceLeaf& balanceLeafS, const BalanceLeaf& balanceLeafB,
                                const TradeHistoryLeaf& tradeHistoryLeaf)
     {
-        exchangeID.bits.fill_with_bits_of_field_element(pb, order.exchangeID);
-        exchangeID.generate_r1cs_witness_from_bits();
-        orderID.bits.fill_with_bits_of_field_element(pb, order.orderID);
-        orderID.generate_r1cs_witness_from_bits();
-        accountID.bits.fill_with_bits_of_field_element(pb, order.accountID);
-        accountID.generate_r1cs_witness_from_bits();
-        tokenS.bits.fill_with_bits_of_field_element(pb, order.tokenS);
-        tokenS.generate_r1cs_witness_from_bits();
-        tokenB.bits.fill_with_bits_of_field_element(pb, order.tokenB);
-        tokenB.generate_r1cs_witness_from_bits();
-        amountS.bits.fill_with_bits_of_field_element(pb, order.amountS);
-        amountS.generate_r1cs_witness_from_bits();
-        amountB.bits.fill_with_bits_of_field_element(pb, order.amountB);
-        amountB.generate_r1cs_witness_from_bits();
-        allOrNone.bits.fill_with_bits_of_field_element(pb, order.allOrNone);
-        allOrNone.generate_r1cs_witness_from_bits();
-        validSince.bits.fill_with_bits_of_field_element(pb, order.validSince);
-        validSince.generate_r1cs_witness_from_bits();
-        validUntil.bits.fill_with_bits_of_field_element(pb, order.validUntil);
-        validUntil.generate_r1cs_witness_from_bits();
-        maxFeeBips.bits.fill_with_bits_of_field_element(pb, order.maxFeeBips);
-        maxFeeBips.generate_r1cs_witness_from_bits();
-        buy.bits.fill_with_bits_of_field_element(pb, order.buy);
-        buy.generate_r1cs_witness_from_bits();
+        // State
+        tradeHistoryBefore.generate_r1cs_witness(tradeHistoryLeaf);
+        balanceSBefore.generate_r1cs_witness(balanceLeafS);
+        balanceBBefore.generate_r1cs_witness(balanceLeafB);
+        accountBefore.generate_r1cs_witness(account);
 
-        feeBips.bits.fill_with_bits_of_field_element(pb, order.feeBips);
-        feeBips.generate_r1cs_witness_from_bits();
-        rebateBips.bits.fill_with_bits_of_field_element(pb, order.rebateBips);
-        rebateBips.generate_r1cs_witness_from_bits();
+        // Inputs
+        orderID.generate_r1cs_witness(pb, order.orderID);
+        accountID.generate_r1cs_witness(pb, order.accountID);
+        tokenS.generate_r1cs_witness(pb, order.tokenS);
+        tokenB.generate_r1cs_witness(pb, order.tokenB);
+        amountS.generate_r1cs_witness(pb, order.amountS);
+        amountB.generate_r1cs_witness(pb, order.amountB);
+        allOrNone.generate_r1cs_witness(pb, order.allOrNone);
+        validSince.generate_r1cs_witness(pb, order.validSince);
+        validUntil.generate_r1cs_witness(pb, order.validUntil);
+        maxFeeBips.generate_r1cs_witness(pb, order.maxFeeBips);
+        buy.generate_r1cs_witness(pb, order.buy);
+        pb.val(label) = order.label;
 
-        feeOrRebateBips.bits.fill_with_bits_of_field_element(pb, order.feeBips + order.rebateBips);
-        feeOrRebateBips.generate_r1cs_witness_from_bits();
-        bRebateNonZero.generate_r1cs_witness();
-        feeAddRebate.generate_r1cs_witness();
-        validateFeeOrRebateBips.generate_r1cs_witness();
+        feeBips.generate_r1cs_witness(pb, order.feeBips);
+        rebateBips.generate_r1cs_witness(pb, order.rebateBips);
 
+        // Checks
         feeOrRebateZero.generate_r1cs_witness();
-        validateFeeBips.generate_r1cs_witness();
-
-        validateExchangeID.generate_r1cs_witness();
-
+        feeBips_leq_maxFeeBips.generate_r1cs_witness();
         tokenS_neq_tokenB.generate_r1cs_witness();
         amountS_notZero.generate_r1cs_witness();
         amountB_notZero.generate_r1cs_witness();
 
-        pb.val(tradeHistoryFilled) = tradeHistoryLeaf.filled;
-        pb.val(tradeHistoryCancelled) = tradeHistoryLeaf.cancelled;
-        pb.val(tradeHistoryOrderID) = tradeHistoryLeaf.orderID;
+        // FeeOrRebate public input
+        fee_plus_rebate.generate_r1cs_witness();
+        feeOrRebateBips.generate_r1cs_witness_from_packed();
+        bRebateNonZero.generate_r1cs_witness();
 
+        // Trade history
         tradeHistory.generate_r1cs_witness();
 
-        pb.val(balanceS) = balanceLeafS.balance;
-        pb.val(balanceB) = balanceLeafB.balance;
-
-        pb.val(publicKey.x) = account.publicKey.x;
-        pb.val(publicKey.y) = account.publicKey.y;
-
-        dualAuthPublicKeyX.bits.fill_with_bits_of_field_element(pb, order.dualAuthPublicKey.x);
-        dualAuthPublicKeyX.generate_r1cs_witness_from_bits();
-        dualAuthPublicKeyY.bits.fill_with_bits_of_field_element(pb, order.dualAuthPublicKey.y);
-        dualAuthPublicKeyY.generate_r1cs_witness_from_bits();
-
+        // Signature
+        hash.generate_r1cs_witness();
         signatureVerifier.generate_r1cs_witness(order.signature);
     }
 
-    void generate_r1cs_constraints()
+    void generate_r1cs_constraints(bool doSignatureCheck = true)
     {
-        exchangeID.generate_r1cs_constraints(true);
+        // Inputs
+        orderID.generate_r1cs_constraints(true);
         accountID.generate_r1cs_constraints(true);
         tokenS.generate_r1cs_constraints(true);
         tokenB.generate_r1cs_constraints(true);
@@ -218,30 +190,37 @@ public:
         validUntil.generate_r1cs_constraints(true);
         maxFeeBips.generate_r1cs_constraints(true);
         buy.generate_r1cs_constraints(true);
+        // label has no limit
 
         feeBips.generate_r1cs_constraints(true);
         rebateBips.generate_r1cs_constraints(true);
 
-        feeOrRebateBips.generate_r1cs_constraints(true);
-        bRebateNonZero.generate_r1cs_constraints();
-        feeAddRebate.generate_r1cs_constraints();
-        validateFeeOrRebateBips.generate_r1cs_constraints();
-
+        // Checks
         feeOrRebateZero.generate_r1cs_constraints();
-        validateFeeBips.generate_r1cs_constraints();
-
-        validateExchangeID.generate_r1cs_constraints();
-
+        feeBips_leq_maxFeeBips.generate_r1cs_constraints();
         tokenS_neq_tokenB.generate_r1cs_constraints();
         amountS_notZero.generate_r1cs_constraints();
         amountB_notZero.generate_r1cs_constraints();
 
+        // FeeOrRebate public input
+        fee_plus_rebate.generate_r1cs_constraints();
+        feeOrRebateBips.generate_r1cs_constraints(true);
+        bRebateNonZero.generate_r1cs_constraints();
+
+        // Trade history
         tradeHistory.generate_r1cs_constraints();
 
-        dualAuthPublicKeyX.generate_r1cs_constraints(true);
-        dualAuthPublicKeyY.generate_r1cs_constraints(true);
+        // Signature
+        hash.generate_r1cs_constraints();
+        if (doSignatureCheck)
+        {
+            signatureVerifier.generate_r1cs_constraints();
+        }
+    }
 
-        signatureVerifier.generate_r1cs_constraints();
+    const VariableT& hasRebate() const
+    {
+        return bRebateNonZero.result();
     }
 };
 
